@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"sync"
 
@@ -42,6 +43,7 @@ import (
 )
 
 func main() {
+	var group, version, kind, resource string
 	fs := pflag.NewFlagSet("inform-namespaced-resources", pflag.ExitOnError)
 	klog.InitFlags(flag.CommandLine)
 	fs.AddGoFlagSet(flag.CommandLine)
@@ -52,6 +54,10 @@ func main() {
 	allClientOpts := clientopts.NewClientOpts("all", "access to the SyncerConfig objects in all clusters")
 	allClientOpts.SetDefaultCurrentContext("system:admin")
 	allClientOpts.AddFlags(fs)
+	fs.StringVar(&group, "group", "", "API Groupå")
+	fs.StringVar(&version, "version", "", "API Version")
+	fs.StringVar(&kind, "kind", "", "API Kind name")
+	fs.StringVar(&resource, "resource", "", "API Resource name")
 	fs.Parse(os.Args)
 
 	fs.Parse(os.Args[1:])
@@ -74,21 +80,21 @@ func main() {
 		logger.Error(err, "failed to make all-cluster client config")
 		os.Exit(2)
 	}
-	allClientConfig.UserAgent = "inform-policyreport"
+	allClientConfig.UserAgent = "inform-anyresource"
 
 	espwInformerFactory := kcpinformers.NewSharedScopedInformerFactory(espwClient, 0, "")
 	mbPreInformer := espwInformerFactory.Tenancy().V1alpha1().Workspaces()
 
 	// PolicyReport GVR/GVK(List)
 	gvr := schema.GroupVersionResource{
-		Group:    "wgpolicyk8s.io",
-		Version:  "v1alpha2",
-		Resource: "policyreports",
+		Group:    group,
+		Version:  version,
+		Resource: resource,
 	}
 	gvk := schema.GroupVersionKind{
 		Group:   gvr.Group,
 		Version: gvr.Version,
-		Kind:    "PolicyReportList",
+		Kind:    kind + "List",
 	}
 
 	// arbitrary resource using dynamic client
@@ -99,17 +105,20 @@ func main() {
 	}
 	crClusterClient := dynamicClusterClient.Resource(gvr)
 	informer := mailboxwatch.NewSharedInformer[dynamic.NamespaceableResourceInterface, *unstructured.UnstructuredList](ctx, gvk, mbPreInformer, crClusterClient, &unstructured.Unstructured{}, 0, upstreamcache.Indexers{})
+
+	loggerWithGVR := logger.WithName(fmt.Sprintf("GVR=%s/%s/%s", group, version, resource))
+
 	informer.AddEventHandler(upstreamcache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj any) { logUnst(logger, "add", obj) },
-		UpdateFunc: func(oldObj, newObj any) { logUnst(logger, "update", newObj) },
-		DeleteFunc: func(obj any) { logUnst(logger, "delete", obj) },
+		AddFunc:    func(obj any) { logUnst(loggerWithGVR, "add", obj) },
+		UpdateFunc: func(oldObj, newObj any) { logUnst(loggerWithGVR, "update", newObj) },
+		DeleteFunc: func(obj any) { logUnst(loggerWithGVR, "delete", obj) },
 	})
 
 	espwInformerFactory.Start(ctx.Done())
 	upstreamcache.WaitForCacheSync(ctx.Done(), mbPreInformer.Informer().HasSynced)
 	go informer.Run(ctx.Done())
 
-	logger.Info("Running")
+	loggerWithGVR.Info("Running")
 
 	<-ctx.Done()
 }
@@ -121,5 +130,6 @@ func logUnst(logger klog.Logger, action string, obj any) {
 	defer logmu.Unlock()
 	x, ok := obj.(*unstructured.Unstructured)
 	_ = ok
-	logger.Info("Notified", "action", action, "name", x.GetName(), "namespace", x.GetNamespace(), "cluster", x.GetAnnotations()["kcp.io/cluster"])
+	msg := fmt.Sprintf("Notified action=%s name=%s namespace=%s cluster=%s", action, x.GetName(), x.GetNamespace(), x.GetAnnotations()["kcp.io/cluster"])
+	logger.Info(msg)
 }
