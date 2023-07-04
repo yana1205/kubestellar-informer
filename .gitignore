@@ -1,0 +1,13 @@
+.kcp*
+*.log
+coverage.*
+tools
+build
+.vscode
+
+# JetBrains IDE files
+.idea/
+*.iml
+
+# Mac trash
+.DS_Store
